@@ -19,6 +19,7 @@ from data import ModelNet40
 from torch.optim.lr_scheduler import CosineAnnealingLR
 import sklearn.metrics as metrics
 import numpy as np
+from tqdm import tqdm
 
 
 def parse_args():
@@ -184,7 +185,7 @@ def train(net, trainloader, optimizer, criterion, device):
     train_pred = []
     train_true = []
     time_cost = datetime.datetime.now()
-    for batch_idx, (data, label) in enumerate(trainloader):
+    for batch_idx, (data, label) in tqdm(enumerate(trainloader)):
         data, label = data.to(device), label.to(device).squeeze()
         data = data.permute(0, 2, 1)  # so, the input data shape is [batch, 3, 1024]
         optimizer.zero_grad()
@@ -225,7 +226,7 @@ def validate(net, testloader, criterion, device):
     test_pred = []
     time_cost = datetime.datetime.now()
     with torch.no_grad():
-        for batch_idx, (data, label) in enumerate(testloader):
+        for batch_idx, (data, label) in tqdm(enumerate(testloader)):
             data, label = data.to(device), label.to(device).squeeze()
             data = data.permute(0, 2, 1)
             logits = net(data)
