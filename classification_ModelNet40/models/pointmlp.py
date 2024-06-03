@@ -6,7 +6,7 @@ import torch.nn.functional as F
 # from einops import rearrange, repeat
 
 
-from pointnet2_ops import pointnet2_utils
+# from pointnet2_ops import pointnet2_utils
 
 # fix pointnet2 bug
 def get_dists(points1, points2):
