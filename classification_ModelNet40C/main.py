@@ -19,7 +19,7 @@ from data import ModelNet40C
 from torch.optim.lr_scheduler import CosineAnnealingLR
 import sklearn.metrics as metrics
 import numpy as np
-from tqdm import tqdm
+from tqdm.notebook import tqdm
 
 
 def parse_args():
