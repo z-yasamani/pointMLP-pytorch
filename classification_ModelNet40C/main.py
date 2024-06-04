@@ -31,12 +31,12 @@ def parse_args():
     parser.add_argument('--batch_size', type=int, default=32, help='batch size in training')
     parser.add_argument('--model', default='PointNet', help='model name [default: pointnet_cls]')
     parser.add_argument('--epoch', default=300, type=int, help='number of epoch in training')
-    parser.add_argument('--num_points', type=int, default=1024, help='Point Number')
+    parser.add_argument('--num_points', type=int, default=649, help='Point Number')
     parser.add_argument('--learning_rate', default=0.1, type=float, help='learning rate in training')
     parser.add_argument('--min_lr', default=0.005, type=float, help='min lr')
     parser.add_argument('--weight_decay', type=float, default=2e-4, help='decay rate')
     parser.add_argument('--seed', type=int, help='random seed')
-    parser.add_argument('--workers', default=8, type=int, help='workers')
+    parser.add_argument('--workers', default=2, type=int, help='workers')
     return parser.parse_args()
 
 
@@ -120,9 +120,12 @@ def main():
         optimizer_dict = checkpoint['optimizer']
 
     printf('==> Preparing data..')
-    train_loader = DataLoader(ModelNet40C(partition='train', num_points=args.num_points), num_workers=args.workers,
+    data_path = "classification_ModelNet40C/data/modelnet40_c"
+    corruption = ["background", "cutout", "density", "density_inc", "distortion", "distortion_rbf", "distortion_rbf_inv", "gaussian", "impulse", "lidar", "occlusion", "rotation", "shear", "uniform", "upsampling"]
+    severity = [1, 2, 3, 4, 5]
+    train_loader = DataLoader(ModelNet40C(data_path, corruption, severity, partition='train', num_points=args.num_points), num_workers=args.workers,
                               batch_size=args.batch_size, shuffle=True, drop_last=True)
-    test_loader = DataLoader(ModelNet40C(partition='test', num_points=args.num_points), num_workers=args.workers,
+    test_loader = DataLoader(ModelNet40C(data_path, corruption, severity, partition='test', num_points=args.num_points), num_workers=args.workers,
                              batch_size=args.batch_size // 2, shuffle=False, drop_last=False)
 
     optimizer = torch.optim.SGD(net.parameters(), lr=args.learning_rate, momentum=0.9, weight_decay=args.weight_decay)
