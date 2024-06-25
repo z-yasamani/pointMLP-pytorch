@@ -15,6 +15,7 @@ import torch.utils.data.distributed
 from torch.utils.data import DataLoader
 import models as models
 from utils import Logger, mkdir_p, progress_bar, save_model, save_args, cal_loss
+from utils.global_local_loss import ChamferLoss, MetricLoss, NormalLoss
 from data import ModelNet40 
 from torch.optim.lr_scheduler import CosineAnnealingLR
 import sklearn.metrics as metrics
@@ -81,12 +82,12 @@ def main():
     # Model
     printf(f"args: {args}")
     printf('==> Building model..')
-    net = models.__dict__[args.model]()
+    pointmlp = models.__dict__[args.model]()
     criterion = cal_loss
-    net = net.to(device)
+    pointmlp = pointmlp.to(device)
     # criterion = criterion.to(device)
     if device == 'cuda':
-        net = torch.nn.DataParallel(net)
+        pointmlp = torch.nn.DataParallel(pointmlp)
         cudnn.benchmark = True
 
     best_test_acc = 0.  # best test accuracy
@@ -108,7 +109,7 @@ def main():
         printf(f"Resuming last checkpoint from {args.checkpoint}")
         checkpoint_path = os.path.join(args.checkpoint, "last_checkpoint.pth")
         checkpoint = torch.load(checkpoint_path)
-        net.load_state_dict(checkpoint['net'])
+        pointmlp.load_state_dict(checkpoint['pointmlp'])
         start_epoch = checkpoint['epoch']
         best_test_acc = checkpoint['best_test_acc']
         best_train_acc = checkpoint['best_train_acc']
@@ -125,15 +126,15 @@ def main():
     test_loader = DataLoader(ModelNet40(partition='test', num_points=args.num_points), num_workers=args.workers,
                              batch_size=args.batch_size // 2, shuffle=False, drop_last=False)
 
-    optimizer = torch.optim.SGD(net.parameters(), lr=args.learning_rate, momentum=0.9, weight_decay=args.weight_decay)
+    optimizer = torch.optim.SGD(pointmlp.parameters(), lr=args.learning_rate, momentum=0.9, weight_decay=args.weight_decay)
     if optimizer_dict is not None:
         optimizer.load_state_dict(optimizer_dict)
     scheduler = CosineAnnealingLR(optimizer, args.epoch, eta_min=args.min_lr, last_epoch=start_epoch - 1)
 
     for epoch in range(start_epoch, args.epoch):
         printf('Epoch(%d/%s) Learning Rate %s:' % (epoch + 1, args.epoch, optimizer.param_groups[0]['lr']))
-        train_out = train(net, train_loader, optimizer, criterion, device)  # {"loss", "acc", "acc_avg", "time"}
-        test_out = validate(net, test_loader, criterion, device)
+        train_out = train(pointmlp, train_loader, optimizer, criterion, device)  # {"loss", "acc", "acc_avg", "time"}
+        test_out = validate(pointmlp, test_loader, criterion, device)
         scheduler.step()
 
         if test_out["acc"] > best_test_acc:
@@ -150,7 +151,7 @@ def main():
         best_train_loss = train_out["loss"] if (train_out["loss"] < best_train_loss) else best_train_loss
 
         save_model(
-            net, epoch, path=args.checkpoint, acc=test_out["acc"], is_best=is_best,
+            pointmlp, epoch, path=args.checkpoint, acc=test_out["acc"], is_best=is_best,
             best_test_acc=best_test_acc,  # best test accuracy
             best_train_acc=best_train_acc,
             best_test_acc_avg=best_test_acc_avg,
@@ -177,8 +178,12 @@ def main():
     printf(f"++++++++" * 5)
 
 
-def train(net, trainloader, optimizer, criterion, device):
-    net.train()
+def train(pointmlp, pointGLR, trainloader, optimizer, criterion, has_normal, device):
+    pointmlp.train()
+    pointGLR.train()
+    metric_criterion = MetricLoss()
+    chamfer_criterion = ChamferLoss()
+
     train_loss = 0
     correct = 0
     total = 0
@@ -189,10 +194,25 @@ def train(net, trainloader, optimizer, criterion, device):
         data, label = data.to(device), label.to(device).squeeze()
         data = data.permute(0, 2, 1)  # so, the input data shape is [batch, 3, 1024]
         optimizer.zero_grad()
-        logits = net(data)
-        loss = criterion(logits, label)
+        ##############################################
+        # We change the output of the model
+        logits, features1, fuse_global, normals_pred = pointmlp(data)
+        loss_mlp = criterion(logits, label)
+
+        global_feature1 = features1[2].squeeze(2)
+        refs1 = features1[0:2]
+        recon1 = pointGLR(fuse_global).transpose(1, 2)  # bs, np, 3
+        loss_metric = metric_criterion(global_feature1, refs1)
+        loss_recon = chamfer_criterion(recon1, points_gt)
+        if has_normal:
+            loss_normals = NormalLoss(normals_pred, normals)
+        else:
+            loss_normals = normals_pred.new(1).fill_(0)
+        
+        loss = loss_recon + loss_metric + loss_normals + loss_mlp
+        ##############################################
         loss.backward()
-        torch.nn.utils.clip_grad_norm_(net.parameters(), 1)
+        torch.nn.utils.clip_grad_norm_(pointmlp.parameters(), 1)
         optimizer.step()
         train_loss += loss.item()
         preds = logits.max(dim=1)[1]
@@ -217,8 +237,8 @@ def train(net, trainloader, optimizer, criterion, device):
     }
 
 
-def validate(net, testloader, criterion, device):
-    net.eval()
+def validate(pointmlp, testloader, criterion, device):
+    pointmlp.eval()
     test_loss = 0
     correct = 0
     total = 0
@@ -229,7 +249,7 @@ def validate(net, testloader, criterion, device):
         for batch_idx, (data, label) in tqdm(enumerate(testloader)):
             data, label = data.to(device), label.to(device).squeeze()
             data = data.permute(0, 2, 1)
-            logits = net(data)
+            logits = pointmlp(data)
             loss = criterion(logits, label)
             test_loss += loss.item()
             preds = logits.max(dim=1)[1]

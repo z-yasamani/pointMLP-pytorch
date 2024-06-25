@@ -365,7 +365,18 @@ class Model(nn.Module):
             nn.Linear(256, self.class_num)
         )
 
+    def _break_up_pc(self, pc):
+        xyz = pc[..., 0:3].contiguous()
+        features = (
+            pc[..., 3:].transpose(1, 2).contiguous()
+            if pc.size(-1) > 3 else None
+        )
+        return xyz, features
+
     def forward(self, x):
+        xyz, features = self._break_up_pc(x)
+        out = []
+        xyz_bank = []
         xyz = x.permute(0, 2, 1)
         batch_size, _, _ = x.size()
         x = self.embedding(x)  # B,D,N
@@ -374,10 +385,18 @@ class Model(nn.Module):
             xyz, x = self.local_grouper_list[i](xyz, x.permute(0, 2, 1))  # [b,g,3]  [b,g,k,d]
             x = self.pre_blocks_list[i](x)  # [b,d,g]
             x = self.pos_blocks_list[i](x)  # [b,d,g]
+            xyz_bank.append(xyz)
+            out.append(x)
 
+            global_feature = torch.cat([self.adaptive_maxpool(now_out).squeeze(2) for now_out in out], dim=1)
+            interpolated_feats = global_feature.unsqueeze(-1).expand(-1, -1, 1024)
+            final_feature = torch.cat(
+                [xyz_bank[0].transpose(1, 2), interpolated_feats],
+                dim=1)
+            point_wise_pred = self.upsample(final_feature)
         x = F.adaptive_max_pool1d(x, 1).squeeze(dim=-1)
         x = self.classifier(x)
-        return x
+        return x, out, global_feature, point_wise_pred
 
 
 
