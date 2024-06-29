@@ -14,6 +14,7 @@ import torch.utils.data
 import torch.utils.data.distributed
 from torch.utils.data import DataLoader
 import models as models
+from models.foldingnet import FoldingNet
 from utils import Logger, mkdir_p, progress_bar, save_model, save_args, cal_loss
 from utils.global_local_loss import ChamferLoss, MetricLoss, NormalLoss
 from data import ModelNet40 
@@ -84,10 +85,13 @@ def main():
     printf('==> Building model..')
     pointmlp = models.__dict__[args.model]()
     criterion = cal_loss
-    pointmlp = pointmlp.to(device)
+
+    pointGLR = FoldingNet(in_channel=512 * 3)
     # criterion = criterion.to(device)
     if device == 'cuda':
         pointmlp = torch.nn.DataParallel(pointmlp)
+        pointGLR = torch.nn.DataParallel(pointGLR).cuda()
+
         cudnn.benchmark = True
 
     best_test_acc = 0.  # best test accuracy
@@ -126,14 +130,15 @@ def main():
     test_loader = DataLoader(ModelNet40(partition='test', num_points=args.num_points), num_workers=args.workers,
                              batch_size=args.batch_size // 2, shuffle=False, drop_last=False)
 
-    optimizer = torch.optim.SGD(pointmlp.parameters(), lr=args.learning_rate, momentum=0.9, weight_decay=args.weight_decay)
+    optimizer = torch.optim.SGD(list(pointmlp.parameters()) + list(pointGLR.parameters()), lr=args.learning_rate, momentum=0.9, weight_decay=args.weight_decay)
     if optimizer_dict is not None:
         optimizer.load_state_dict(optimizer_dict)
     scheduler = CosineAnnealingLR(optimizer, args.epoch, eta_min=args.min_lr, last_epoch=start_epoch - 1)
 
+    has_normal = False
     for epoch in range(start_epoch, args.epoch):
         printf('Epoch(%d/%s) Learning Rate %s:' % (epoch + 1, args.epoch, optimizer.param_groups[0]['lr']))
-        train_out = train(pointmlp, train_loader, optimizer, criterion, device)  # {"loss", "acc", "acc_avg", "time"}
+        train_out = train(pointmlp, pointGLR, train_loader, optimizer, criterion, has_normal, device)  # {"loss", "acc", "acc_avg", "time"}
         test_out = validate(pointmlp, test_loader, criterion, device)
         scheduler.step()
 
