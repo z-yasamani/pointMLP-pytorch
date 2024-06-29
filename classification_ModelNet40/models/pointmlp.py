@@ -313,12 +313,23 @@ class PosExtraction(nn.Module):
         return self.operation(x)
 
 
+class Normalize(nn.Module):
+    def __init__(self, dim):
+        super().__init__()
+        self.dim = dim
+
+    def forward(self, x):
+        norm = torch.norm(x, p=2, dim=self.dim, keepdim=True)
+        return x / norm
+
+
 class Model(nn.Module):
     def __init__(self, points=1024, class_num=40, embed_dim=64, groups=1, res_expansion=1.0,
                  activation="relu", bias=True, use_xyz=True, normalize="center",
                  dim_expansion=[2, 2, 2, 2], pre_blocks=[2, 2, 2, 2], pos_blocks=[2, 2, 2, 2],
-                 k_neighbors=[32, 32, 32, 32], reducers=[2, 2, 2, 2], **kwargs):
+                 k_neighbors=[32, 32, 32, 32], reducers=[2, 2, 2, 2], point_wise_out=False, **kwargs):
         super(Model, self).__init__()
+        self.point_wise_out = point_wise_out
         self.stages = len(pre_blocks)
         self.class_num = class_num
         self.points = points
@@ -351,8 +362,19 @@ class Model(nn.Module):
             self.pos_blocks_list.append(pos_block_module)
 
             last_channel = out_channel
-
+        self.adaptive_maxpool = nn.AdaptiveMaxPool1d(1)
         self.act = get_activation(activation)
+        if point_wise_out:
+            self.upsample = nn.Sequential(
+                nn.Conv1d(512*3 + 3, 512, 1),
+                nn.BatchNorm1d(512),
+                nn.ReLU(inplace=True),
+                nn.Conv1d(512, 256, 1),
+                nn.BatchNorm1d(256),
+                nn.ReLU(inplace=True),
+                nn.Conv1d(256, 3, 1),
+                Normalize(dim=1)
+            )
         self.classifier = nn.Sequential(
             nn.Linear(last_channel, 512),
             nn.BatchNorm1d(512),
@@ -388,15 +410,21 @@ class Model(nn.Module):
             xyz_bank.append(xyz)
             out.append(x)
 
+        x = F.adaptive_max_pool1d(x, 1).squeeze(dim=-1)
+        x = self.classifier(x)
+
+        if not self.point_wise_out:
+            return x, out, torch.cat([self.adaptive_maxpool(now_out).squeeze(2) for now_out in out], dim=1)
+        else:
             global_feature = torch.cat([self.adaptive_maxpool(now_out).squeeze(2) for now_out in out], dim=1)
-            interpolated_feats = global_feature.unsqueeze(-1).expand(-1, -1, 1024)
+            interpolated_feats = global_feature.unsqueeze(-1).expand(-1, -1, 512)
             final_feature = torch.cat(
                 [xyz_bank[0].transpose(1, 2), interpolated_feats],
                 dim=1)
             point_wise_pred = self.upsample(final_feature)
-        x = F.adaptive_max_pool1d(x, 1).squeeze(dim=-1)
-        x = self.classifier(x)
-        return x, out, global_feature, point_wise_pred
+
+            return x, out, global_feature, point_wise_pred
+
 
 
 
