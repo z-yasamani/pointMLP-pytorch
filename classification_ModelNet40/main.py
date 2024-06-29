@@ -197,11 +197,16 @@ def train(pointmlp, pointGLR, trainloader, optimizer, criterion, has_normal, dev
     time_cost = datetime.datetime.now()
     for batch_idx, (data, label) in tqdm(enumerate(trainloader)):
         data, label = data.to(device), label.to(device).squeeze()
+        points_gt = data
         data = data.permute(0, 2, 1)  # so, the input data shape is [batch, 3, 1024]
         optimizer.zero_grad()
         ##############################################
         # We change the output of the model
-        logits, features1, fuse_global, normals_pred = pointmlp(data)
+        if has_normal:
+            logits, features1, fuse_global, normals_pred = pointmlp(data)
+        else:
+            logits, features1, fuse_global = pointmlp(data)
+
         loss_mlp = criterion(logits, label)
 
         global_feature1 = features1[2].squeeze(2)
@@ -209,11 +214,11 @@ def train(pointmlp, pointGLR, trainloader, optimizer, criterion, has_normal, dev
         recon1 = pointGLR(fuse_global).transpose(1, 2)  # bs, np, 3
         loss_metric = metric_criterion(global_feature1, refs1)
         loss_recon = chamfer_criterion(recon1, points_gt)
-        if has_normal:
-            loss_normals = NormalLoss(normals_pred, normals)
-        else:
-            loss_normals = normals_pred.new(1).fill_(0)
-        
+        # if has_normal:
+        #     loss_normals = NormalLoss(normals_pred, normals)
+        # else:
+        #     loss_normals = normals_pred.new(1).fill_(0)
+        loss_normals = 0
         loss = loss_recon + loss_metric + loss_normals + loss_mlp
         ##############################################
         loss.backward()
